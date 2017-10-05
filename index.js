@@ -3,7 +3,7 @@ var _ = require('lodash');
 var temporalDefaultOptions = {
   // runs the insert within the sequelize hook chain, disable
   // for increased performance
-  blocking: true 
+  blocking: true
 };
 
 var excludeAttributes = function(obj, attrsToExclude){
@@ -26,6 +26,10 @@ var Temporal = function(model, sequelize, temporalOptions){
       primaryKey:    true,
       autoIncrement: true,
       unique: true
+    },
+    type: {
+      type: Sequelize.ENUM('delete', 'update'),
+      defaultValue: 'update',
     },
     archivedAt: {
       type: Sequelize.DATE,
@@ -64,6 +68,14 @@ var Temporal = function(model, sequelize, temporalOptions){
       return historyRecord;
     }
   }
+  var insertDeleteHook = function (obj, options) {
+    var dataValues = obj._previousDataValues || obj.dataValues;
+    dataValues.type = 'delete';
+    var historyRecord = modelHistory.create(dataValues, { transaction: options.transaction });
+    if (temporalOptions.blocking) {
+      return historyRecord;
+    }
+  }
   var insertBulkHook = function(options){
     if(!options.individualHooks){
       var queryAll = model.findAll({where: options.where, transaction: options.transaction}).then(function(hits){
@@ -77,17 +89,33 @@ var Temporal = function(model, sequelize, temporalOptions){
       }
     }
   }
+  var insertBulkDeleteHook = function (options) {
+    if (!options.individualHooks) {
+      var queryAll = model.findAll({ where: options.where, transaction: options.transaction }).then(function (hits) {
+        if (hits) {
+          hits = _.pluck(hits, 'dataValues').map(value => {
+            value.type = 'delete';
+            return value;
+          });
+          return modelHistory.bulkCreate(hits, { transaction: options.transaction });
+        }
+      });
+      if (temporalOptions.blocking) {
+        return queryAll;
+      }
+    }
+  }
 
   // use `after` to be nonBlocking
   // all hooks just create a copy
   model.hook('beforeUpdate', insertHook);
-  model.hook('beforeDestroy', insertHook);
+  model.hook('beforeDestroy', insertDeleteHook);
 
   model.hook('beforeBulkUpdate', insertBulkHook);
-  model.hook('beforeBulkDestroy', insertBulkHook);
+  model.hook('beforeBulkDestroy', insertBulkDeleteHook);
 
   var readOnlyHook = function(){
-    throw new Error("This is a read-only history database. You aren't allowed to modify it.");    
+    throw new Error("This is a read-only history database. You aren't allowed to modify it.");
   }
 
   modelHistory.hook('beforeUpdate', readOnlyHook);
